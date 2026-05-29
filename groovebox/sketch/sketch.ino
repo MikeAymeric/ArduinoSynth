@@ -22,7 +22,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 
-#define USE_ANALOG_WRITE   // commenta se analogWriteFrequency non compila
+// #define USE_ANALOG_WRITE   // non disponibile su Zephyr/Uno Q — usa tone()
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
 
