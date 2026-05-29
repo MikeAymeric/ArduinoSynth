@@ -24,7 +24,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 
-// #define USE_HW_PWM   // disabilitato: overlay non ancora in posizione corretta
+#define USE_HW_PWM   // Hardware PWM via STM32 TIM3/TIM4 (zephyr_user node)
 
 #ifdef USE_HW_PWM
 #include <zephyr/drivers/pwm.h>
@@ -184,11 +184,14 @@ int8_t heldButtonIdx() {
 // ════════════════════════ Audio helpers ════════════════════════
 
 #ifdef USE_HW_PWM
-// Specifiche PWM dalle alias dichiarate nell'overlay DTS
+// Indici nel nodo zephyr_user (system overlay arduino_uno_q_stm32u585xx.overlay):
+//   5 → D8  / PB4 / TIM3_CH1  (BUZZER_A)
+//   6 → D9  / PB8 / TIM4_CH3  (BUZZER_CHR)
+//   7 → D10 / PB9 / TIM4_CH4  (BUZZER_B)
 static const struct pwm_dt_spec pwm_specs[3] = {
-  PWM_DT_SPEC_GET(DT_ALIAS(pwm_buzzer_a)),
-  PWM_DT_SPEC_GET(DT_ALIAS(pwm_buzzer_chr)),
-  PWM_DT_SPEC_GET(DT_ALIAS(pwm_buzzer_b)),
+  PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 5),
+  PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 6),
+  PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 7),
 };
 #endif
 
@@ -239,7 +242,7 @@ void startNote(uint8_t voice, uint16_t freq, unsigned long dur,
   if (freq > 0) {
     uint16_t startF = (effect == FX_PORTAMENTO && prevFreq[voice] > 0)
                       ? prevFreq[voice] : freq;
-    voiceTone(BUZZER_PINS[voice], startF, wave);
+    voiceTone(voice, startF, wave);
   }
 }
 
@@ -250,7 +253,7 @@ void updateVoices() {
     unsigned long el = now - noteStart[v];
 
     if (el >= noteDur[v]) {
-      voiceOff(BUZZER_PINS[v]);
+      voiceOff(v);
       noteActive[v] = false;
       continue;
     }
@@ -260,18 +263,18 @@ void updateVoices() {
         uint16_t phase = el % 167;
         int16_t  mod   = (phase < 84) ? (int16_t)phase - 42 : 42 - (int16_t)(phase - 84);
         uint16_t f     = baseFreq[v] + (int16_t)(baseFreq[v] * mod / 1050);
-        voiceTone(BUZZER_PINS[v], f, noteWave[v]);
+        voiceTone(v, f, noteWave[v]);
         break;
       }
       case FX_TREMOLO:
-        if ((el / 62) % 2 == 0) voiceTone(BUZZER_PINS[v], baseFreq[v], noteWave[v]);
-        else                     voiceOff(BUZZER_PINS[v]);
+        if ((el / 62) % 2 == 0) voiceTone(v, baseFreq[v], noteWave[v]);
+        else                     voiceOff(v);
         break;
       case FX_PORTAMENTO:
         if (prevFreq[v] > 0 && prevFreq[v] != baseFreq[v]) {
           long diff = (long)baseFreq[v] - (long)prevFreq[v];
           uint16_t f = prevFreq[v] + (uint16_t)(diff * (long)el / (long)noteDur[v]);
-          voiceTone(BUZZER_PINS[v], f, noteWave[v]);
+          voiceTone(v, f, noteWave[v]);
         }
         break;
       default: break;
@@ -327,11 +330,11 @@ void triggerStep(uint8_t step, unsigned long stepMs) {
 
 void tickArp(uint8_t step, unsigned long arpMs) {
   if (stepArp[0][step] && active[0][step] && seq[0][step] > 0) {
-    voiceOff(BUZZER_PINS[0]);
+    voiceOff(0);
     startNote(0, NOTES[arpNoteForPos(0, step, arpPos)], arpMs, stepFx[0][step], waveform[0]);
   }
   if (stepArp[1][step] && active[1][step] && seq[1][step] > 0) {
-    voiceOff(BUZZER_PINS[2]);
+    voiceOff(2);
     startNote(2, NOTES[arpNoteForPos(1, step, arpPos)], arpMs, stepFx[1][step], waveform[1]);
   }
 }
@@ -457,11 +460,16 @@ void setup() {
     pinMode(BTN_PINS[i], INPUT_PULLUP);
 
 #ifdef USE_HW_PWM
-  // I pin buzzer sono gestiti dall'hardware PWM — non servono come OUTPUT
+  // TIM3 e TIM4 usano zephyr,deferred-init: vanno inizializzati prima dell'uso.
+  // analogWrite() sul core Zephyr attiva il device la prima volta che viene chiamato.
+  analogWrite(BUZZER_A,   0);
+  analogWrite(BUZZER_CHR, 0);
+  analogWrite(BUZZER_B,   0);
+  delay(10);
+
   // Verifica che i device PWM siano pronti
   for (uint8_t v = 0; v < 3; v++) {
     if (!device_is_ready(pwm_specs[v].dev)) {
-      // PWM non disponibile: mostra errore sul display e fallisce gracefully
       display.clearBuffer();
       display.setFont(u8g2_font_6x10_tf);
       display.setCursor(0, 20);
@@ -476,6 +484,8 @@ void setup() {
       while (1) delay(1000);
     }
   }
+  // Metti tutte le voci in silenzio
+  for (uint8_t v = 0; v < 3; v++) voiceOff(v);
 #else
   for (uint8_t b : BUZZER_PINS) pinMode(b, OUTPUT);
 #endif
