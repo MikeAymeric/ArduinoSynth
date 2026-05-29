@@ -1,24 +1,22 @@
 /*
- * Groovebox Polifonico v3 - Arduino Uno Q
+ * Groovebox Polifonico v4 - Arduino Uno Q
  * 2 tracce + accordi + effetti + arpeggiatore + forme d'onda
  *
  * ATTENZIONE Uno Q: potenziometro a 3.3V, non 5V!
  *
- * Pulsanti:
- *   PLAY(2)  LEFT(3)  RIGHT(4)  UP(5)  DOWN(6)  TOGGLE(7)  TRACK(11)
- * Buzzer:
- *   A=8 (melodia)   CHR=9 (accordo)   B=10 (basso)
- * OLED: SDA/SCL   POT: A0
+ * Pulsanti (tutte le azioni scattano al RILASCIO del tasto):
+ *   Rilascio < 3s  → short press
+ *   Rilascio >= 3s → long press  (barra progresso sul display)
  *
- * Long press:
- *   TOGGLE → accordo su step (solo traccia A)
- *   UP     → arpeggio on/off per step
- *   LEFT   → modalità forma d'onda (pot = scelta)
- *   RIGHT  → modalità pattern arp (pot = UP/DOWN/UP-DOWN/RANDOM)
- *   TRACK  → modalità effetto (pot = scelta)
+ *   PLAY   short → play/stop
+ *   LEFT   short → step -1     |  long → modalità forma d'onda
+ *   RIGHT  short → step +1     |  long → modalità pattern arp
+ *   UP     short → nota +1     |  long → arp toggle per step
+ *   DOWN   short → nota -1
+ *   TOGGLE short → step on/off |  long → accordo (solo traccia A)
+ *   TRACK  short → switch A/B  |  long → modalità effetto
  *
- * Se analogWriteFrequency non è disponibile, commenta la riga USE_ANALOG_WRITE
- * e verrà usato tone() (solo onda quadra).
+ * Se analogWriteFrequency non è disponibile, commenta USE_ANALOG_WRITE.
  */
 
 #include <U8g2lib.h>
@@ -113,44 +111,68 @@ unsigned long noteDur[3]   = {};
 uint8_t       noteFx[3]    = {};
 uint8_t       noteWave[3]  = {};
 
-// ════════════════════════ Debounce + long press ════════════════════════
-#define NUM_BTNS     7
-#define DEBOUNCE_MS  50
-#define LONGPRESS_MS 500
+// ════════════════════════ Debounce + press detection ════════════════════════
+// Tutte le azioni scattano al RILASCIO del tasto:
+//   held < LONG_PRESS_MS  → short press
+//   held >= LONG_PRESS_MS → long press
+// La barra di progresso sul display mostra quanto manca al long press.
+
+#define NUM_BTNS      7
+#define DEBOUNCE_MS   50
+#define LONG_PRESS_MS 3000UL
 
 const uint8_t BTN_PINS[NUM_BTNS] = {
   BTN_PLAY, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_TOGGLE, BTN_TRACK
 };
-bool          btnCur[NUM_BTNS]       = {};
-bool          btnPrev[NUM_BTNS]      = {};
-bool          btnEdge[NUM_BTNS]      = {};
-bool          btnLongFired[NUM_BTNS] = {};
-unsigned long btnTime[NUM_BTNS]      = {};
-unsigned long btnHold[NUM_BTNS]      = {};
+
+bool          btnCur[NUM_BTNS]   = {};  // stato debounced corrente
+bool          btnPrev[NUM_BTNS]  = {};  // stato raw precedente
+bool          btnShort[NUM_BTNS] = {};  // true per un frame al rilascio short
+bool          btnLong[NUM_BTNS]  = {};  // true per un frame al rilascio long
+unsigned long btnTime[NUM_BTNS]  = {};  // timestamp ultimo cambio raw
+unsigned long btnHold[NUM_BTNS]  = {};  // timestamp pressione debounced
 
 void readButtons() {
   for (uint8_t i = 0; i < NUM_BTNS; i++) {
+    btnShort[i] = false;
+    btnLong[i]  = false;
+
     bool raw = (digitalRead(BTN_PINS[i]) == LOW);
-    if (raw != btnPrev[i]) {
-      btnTime[i] = millis();
-      if (!raw) btnLongFired[i] = false;  // reset al rilascio
-    }
+    if (raw != btnPrev[i]) btnTime[i] = millis();
     btnPrev[i] = raw;
-    bool deb    = (millis() - btnTime[i] >= DEBOUNCE_MS) ? raw : btnCur[i];
-    btnEdge[i]  = deb && !btnCur[i];
-    if (btnEdge[i]) btnHold[i] = millis();
-    btnCur[i]   = deb;
+
+    bool deb = (millis() - btnTime[i] >= DEBOUNCE_MS) ? raw : btnCur[i];
+
+    bool rising  =  deb && !btnCur[i];   // fronte di salita  (pressione)
+    bool falling = !deb &&  btnCur[i];   // fronte di discesa (rilascio)
+
+    if (rising)  btnHold[i] = millis();  // registra quando è stato premuto
+
+    if (falling) {
+      unsigned long held = millis() - btnHold[i];
+      if (held >= LONG_PRESS_MS) btnLong[i]  = true;
+      else                       btnShort[i] = true;
+    }
+
+    btnCur[i] = deb;
   }
 }
 
-bool pressed(uint8_t i) { return btnEdge[i]; }
+bool pressed(uint8_t i)     { return btnShort[i]; }
+bool longPressed(uint8_t i) { return btnLong[i];  }
 
-bool longPressed(uint8_t i) {
-  if (btnCur[i] && !btnLongFired[i] && millis() - btnHold[i] > LONGPRESS_MS) {
-    btnLongFired[i] = true;
-    return true;
+// Indice del tasto tenuto premuto più a lungo (-1 se nessuno)
+// Usato per mostrare la barra di progresso sul display
+int8_t heldButtonIdx() {
+  unsigned long best = 0;
+  int8_t        idx  = -1;
+  for (uint8_t i = 0; i < NUM_BTNS; i++) {
+    if (btnCur[i]) {
+      unsigned long held = millis() - btnHold[i];
+      if (held > best) { best = held; idx = i; }
+    }
   }
-  return false;
+  return idx;
 }
 
 // ════════════════════════ Audio helpers ════════════════════════
@@ -387,6 +409,17 @@ void drawUI() {
   display.print(WAVE_NAMES[waveform[editTrack]]);
   display.print(playing ? F(" >> ") : F(" [] "));
   display.print(bpm);
+
+  // ── Barra progresso long press ──
+  int8_t held = heldButtonIdx();
+  if (held >= 0) {
+    unsigned long elapsed = millis() - btnHold[held];
+    if (elapsed > 300) {  // mostra solo dopo 300ms per non essere invadente
+      uint8_t barW = (uint8_t)min((long)elapsed * 128 / (long)LONG_PRESS_MS, 128L);
+      display.drawFrame(0, 62, 128, 2);
+      display.drawBox(0, 62, barW, 2);
+    }
+  }
 
   display.sendBuffer();
 }
