@@ -1,28 +1,34 @@
 /*
- * Groovebox Polifonico v4 - Arduino Uno Q
- * 2 tracce + accordi + effetti + arpeggiatore + forme d'onda
+ * Groovebox Polifonico v5 - Arduino Uno Q
+ * 2 tracce + accordi + effetti + arpeggiatore + forme d'onda HW
  *
  * ATTENZIONE Uno Q: potenziometro a 3.3V, non 5V!
  *
- * Pulsanti (tutte le azioni scattano al RILASCIO del tasto):
- *   Rilascio < 3s  → short press
- *   Rilascio >= 3s → long press  (barra progresso sul display)
+ * Forma d'onda: usa Zephyr PWM API (hardware STM32 TIM3/TIM4)
+ *   Richiede arduino_uno_q.overlay nella cartella sketch/
+ *   D8=PB4=TIM3_CH1  D9=PB8=TIM4_CH3  D10=PB9=TIM4_CH4
  *
+ * Se il build fallisce per errori DTS, commenta USE_HW_PWM
+ * e verrà usato tone() come fallback.
+ *
+ * Pulsanti (azioni al RILASCIO — barra progresso per long press):
  *   PLAY   short → play/stop
- *   LEFT   short → step -1     |  long → modalità forma d'onda
- *   RIGHT  short → step +1     |  long → modalità pattern arp
- *   UP     short → nota +1     |  long → arp toggle per step
+ *   LEFT   short → step -1     |  long → forma d'onda (pot)
+ *   RIGHT  short → step +1     |  long → pattern arp (pot)
+ *   UP     short → nota +1     |  long → arp on/off per step
  *   DOWN   short → nota -1
- *   TOGGLE short → step on/off |  long → accordo (solo traccia A)
- *   TRACK  short → switch A/B  |  long → modalità effetto
- *
- * Se analogWriteFrequency non è disponibile, commenta USE_ANALOG_WRITE.
+ *   TOGGLE short → step on/off |  long → accordo (traccia A)
+ *   TRACK  short → switch A/B  |  long → effetto (pot)
  */
 
 #include <U8g2lib.h>
 #include <Wire.h>
 
-// #define USE_ANALOG_WRITE   // non disponibile su Zephyr/Uno Q — usa tone()
+#define USE_HW_PWM   // commenta se il build DTS fallisce
+
+#ifdef USE_HW_PWM
+#include <zephyr/drivers/pwm.h>
+#endif
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
 
@@ -176,27 +182,46 @@ int8_t heldButtonIdx() {
 }
 
 // ════════════════════════ Audio helpers ════════════════════════
-void voiceTone(uint8_t pin, uint16_t freq, uint8_t wave) {
-  if (freq == 0) return;
-#ifdef USE_ANALOG_WRITE
-  analogWriteFrequency(pin, freq);
-  analogWrite(pin, WAVE_DUTY[wave]);
+
+#ifdef USE_HW_PWM
+// Specifiche PWM dalle alias dichiarate nell'overlay DTS
+static const struct pwm_dt_spec pwm_specs[3] = {
+  PWM_DT_SPEC_GET(DT_ALIAS(pwm_buzzer_a)),
+  PWM_DT_SPEC_GET(DT_ALIAS(pwm_buzzer_chr)),
+  PWM_DT_SPEC_GET(DT_ALIAS(pwm_buzzer_b)),
+};
+#endif
+
+// Percentuali duty cycle per ogni forma d'onda
+// SQUARE=50%, PULSE25=25%, PULSE12=12%
+const uint8_t WAVE_DUTY_PCT[] = { 50, 25, 12 };
+
+void voiceTone(uint8_t voice, uint16_t freq, uint8_t wave) {
+  if (freq == 0) { voiceOff(voice); return; }
+
+#ifdef USE_HW_PWM
+  // Hardware PWM: periodo e pulse in nanosecondi
+  uint32_t period_ns = 1000000000UL / (uint32_t)freq;
+  uint32_t pulse_ns  = period_ns * WAVE_DUTY_PCT[wave] / 100;
+  pwm_set_dt(&pwm_specs[voice], period_ns, pulse_ns);
 #else
-  tone(pin, freq);
+  // Fallback: tone() — solo onda quadra 50%
+  tone(BUZZER_PINS[voice], freq);
 #endif
 }
 
-void voiceOff(uint8_t pin) {
-#ifdef USE_ANALOG_WRITE
-  analogWrite(pin, 0);
+void voiceOff(uint8_t voice) {
+#ifdef USE_HW_PWM
+  // Duty cycle 0 = silenzio, mantiene il timer attivo
+  pwm_set_dt(&pwm_specs[voice], PWM_MSEC(1), 0);
 #else
-  noTone(pin);
+  noTone(BUZZER_PINS[voice]);
 #endif
 }
 
 void stopAllVoices() {
   for (uint8_t v = 0; v < 3; v++) {
-    voiceOff(BUZZER_PINS[v]);
+    voiceOff(v);
     noteActive[v] = false;
   }
 }
@@ -431,7 +456,29 @@ void setup() {
   for (uint8_t i = 0; i < NUM_BTNS; i++)
     pinMode(BTN_PINS[i], INPUT_PULLUP);
 
+#ifdef USE_HW_PWM
+  // I pin buzzer sono gestiti dall'hardware PWM — non servono come OUTPUT
+  // Verifica che i device PWM siano pronti
+  for (uint8_t v = 0; v < 3; v++) {
+    if (!device_is_ready(pwm_specs[v].dev)) {
+      // PWM non disponibile: mostra errore sul display e fallisce gracefully
+      display.clearBuffer();
+      display.setFont(u8g2_font_6x10_tf);
+      display.setCursor(0, 20);
+      display.print(F("ERR: PWM"));
+      display.print(v);
+      display.print(F(" not ready"));
+      display.setCursor(0, 35);
+      display.print(F("Ricompila senza"));
+      display.setCursor(0, 48);
+      display.print(F("USE_HW_PWM"));
+      display.sendBuffer();
+      while (1) delay(1000);
+    }
+  }
+#else
   for (uint8_t b : BUZZER_PINS) pinMode(b, OUTPUT);
+#endif
 
   randomSeed(analogRead(A1));
 

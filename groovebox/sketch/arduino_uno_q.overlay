@@ -1,0 +1,56 @@
+/*
+ * Device Tree overlay - Arduino Uno Q
+ * Abilita hardware PWM su:
+ *   D8  = PB4 → TIM3 CH1  (BUZZER_A,   melodia)
+ *   D9  = PB8 → TIM4 CH3  (BUZZER_CHR, accordo)
+ *   D10 = PB9 → TIM4 CH4  (BUZZER_B,   basso)
+ *
+ * Posizionare in: groovebox/sketch/arduino_uno_q.overlay
+ */
+
+/ {
+    aliases {
+        pwm-buzzer-a   = &pwm_buzzer_a;
+        pwm-buzzer-chr = &pwm_buzzer_chr;
+        pwm-buzzer-b   = &pwm_buzzer_b;
+    };
+
+    pwm-buzzers {
+        compatible = "pwm-leds";
+
+        pwm_buzzer_a: pwm_buzzer_a {
+            /* TIM3 CH1, periodo iniziale 1ms, polarità normale */
+            pwms = <&pwm3 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+        };
+        pwm_buzzer_chr: pwm_buzzer_chr {
+            /* TIM4 CH3 */
+            pwms = <&pwm4 3 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+        };
+        pwm_buzzer_b: pwm_buzzer_b {
+            /* TIM4 CH4 */
+            pwms = <&pwm4 4 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+        };
+    };
+};
+
+/* TIM3 — canale CH1 su PB4 (Arduino D8) */
+&timers3 {
+    status = "okay";
+
+    pwm3: pwm {
+        status = "okay";
+        pinctrl-0 = <&tim3_ch1_pb4>;
+        pinctrl-names = "default";
+    };
+};
+
+/* TIM4 — canali CH3 su PB8 (D9) e CH4 su PB9 (D10) */
+&timers4 {
+    status = "okay";
+
+    pwm4: pwm {
+        status = "okay";
+        pinctrl-0 = <&tim4_ch3_pb8 &tim4_ch4_pb9>;
+        pinctrl-names = "default";
+    };
+};
