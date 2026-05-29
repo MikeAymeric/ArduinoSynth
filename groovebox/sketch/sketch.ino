@@ -184,14 +184,16 @@ int8_t heldButtonIdx() {
 // ════════════════════════ Audio helpers ════════════════════════
 
 #ifdef USE_HW_PWM
-// Indici nel nodo zephyr_user (system overlay arduino_uno_q_stm32u585xx.overlay):
+// Indici nel nodo /zephyr,user (system overlay arduino_uno_q_stm32u585xx.overlay):
 //   5 → D8  / PB4 / TIM3_CH1  (BUZZER_A)
 //   6 → D9  / PB8 / TIM4_CH3  (BUZZER_CHR)
 //   7 → D10 / PB9 / TIM4_CH4  (BUZZER_B)
+// Usa DT_PATH (→ DT_N_S_zephyr_user), NON DT_NODELABEL (→ DT_N_NODELABEL_...)
+// perché il nodo non ha un label registrato nell'LLEXT precompilato.
 static const struct pwm_dt_spec pwm_specs[3] = {
-  PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 5),
-  PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 6),
-  PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 7),
+  PWM_DT_SPEC_GET_BY_IDX(DT_PATH(zephyr_user), 5),
+  PWM_DT_SPEC_GET_BY_IDX(DT_PATH(zephyr_user), 6),
+  PWM_DT_SPEC_GET_BY_IDX(DT_PATH(zephyr_user), 7),
 };
 #endif
 
