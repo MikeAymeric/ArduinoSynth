@@ -118,10 +118,11 @@ uint8_t       noteFx[3]    = {};
 uint8_t       noteWave[3]  = {};
 
 // ════════════════════════ Debounce + press detection ════════════════════════
-// Tutte le azioni scattano al RILASCIO del tasto:
-//   held < LONG_PRESS_MS  → short press
-//   held >= LONG_PRESS_MS → long press
-// La barra di progresso sul display mostra quanto manca al long press.
+// Short press  → scatta al RILASCIO se tenuto < LONG_PRESS_MS
+// Long edge    → scatta UNA VOLTA mentre il tasto è ancora tenuto (al raggiungimento dei 3s)
+//               usato per toggle (accordo, arp) e per APRIRE i modal
+// Modal exit   → il modal si chiude al RILASCIO del tasto che lo ha aperto
+// Progress bar → mostra avanzamento verso i 3s, sparisce quando il long scatta
 
 #define NUM_BTNS      7
 #define DEBOUNCE_MS   50
@@ -131,49 +132,58 @@ const uint8_t BTN_PINS[NUM_BTNS] = {
   BTN_PLAY, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_TOGGLE, BTN_TRACK
 };
 
-bool          btnCur[NUM_BTNS]   = {};  // stato debounced corrente
-bool          btnPrev[NUM_BTNS]  = {};  // stato raw precedente
-bool          btnShort[NUM_BTNS] = {};  // true per un frame al rilascio short
-bool          btnLong[NUM_BTNS]  = {};  // true per un frame al rilascio long
-unsigned long btnTime[NUM_BTNS]  = {};  // timestamp ultimo cambio raw
-unsigned long btnHold[NUM_BTNS]  = {};  // timestamp pressione debounced
+bool          btnCur[NUM_BTNS]      = {};  // stato debounced corrente
+bool          btnPrev[NUM_BTNS]     = {};  // stato raw precedente
+bool          btnShort[NUM_BTNS]    = {};  // one-shot: rilascio prima dei 3s
+bool          btnLongEdge[NUM_BTNS] = {};  // one-shot: raggiunge 3s mentre ancora premuto
+bool          btnLongActive[NUM_BTNS]= {};  // livello: true mentre tenuto ≥ 3s
+bool          btnLongFired[NUM_BTNS]= {};  // sopprime short dopo un long
+unsigned long btnTime[NUM_BTNS]     = {};  // timestamp ultimo cambio raw
+unsigned long btnHold[NUM_BTNS]     = {};  // timestamp pressione debounced
 
 void readButtons() {
+  unsigned long now = millis();
   for (uint8_t i = 0; i < NUM_BTNS; i++) {
-    btnShort[i] = false;
-    btnLong[i]  = false;
+    btnShort[i]    = false;
+    btnLongEdge[i] = false;
 
     bool raw = (digitalRead(BTN_PINS[i]) == LOW);
-    if (raw != btnPrev[i]) btnTime[i] = millis();
+    if (raw != btnPrev[i]) btnTime[i] = now;
     btnPrev[i] = raw;
 
-    bool deb = (millis() - btnTime[i] >= DEBOUNCE_MS) ? raw : btnCur[i];
+    bool deb     = (now - btnTime[i] >= DEBOUNCE_MS) ? raw : btnCur[i];
+    bool rising  =  deb && !btnCur[i];
+    bool falling = !deb &&  btnCur[i];
 
-    bool rising  =  deb && !btnCur[i];   // fronte di salita  (pressione)
-    bool falling = !deb &&  btnCur[i];   // fronte di discesa (rilascio)
-
-    if (rising)  btnHold[i] = millis();  // registra quando è stato premuto
-
-    if (falling) {
-      unsigned long held = millis() - btnHold[i];
-      if (held >= LONG_PRESS_MS) btnLong[i]  = true;
-      else                       btnShort[i] = true;
+    if (rising) {
+      btnHold[i]      = now;
+      btnLongFired[i] = false;
     }
+
+    // Long threshold raggiunto mentre ancora premuto
+    bool reachedLong = deb && (now - btnHold[i] >= LONG_PRESS_MS);
+    if (reachedLong && !btnLongFired[i]) {
+      btnLongEdge[i]  = true;   // one-shot
+      btnLongFired[i] = true;   // non ripetere
+    }
+    btnLongActive[i] = reachedLong;
+
+    // Short press: rilascio senza aver mai raggiunto i 3s
+    if (falling && !btnLongFired[i]) btnShort[i] = true;
 
     btnCur[i] = deb;
   }
 }
 
-bool pressed(uint8_t i)     { return btnShort[i]; }
-bool longPressed(uint8_t i) { return btnLong[i];  }
+bool pressed(uint8_t i)     { return btnShort[i];    }
+bool longPressed(uint8_t i) { return btnLongEdge[i]; }   // one-shot al raggiungimento dei 3s
 
-// Indice del tasto tenuto premuto più a lungo (-1 se nessuno)
-// Usato per mostrare la barra di progresso sul display
+// Tasto tenuto con il maggior tempo (per progress bar)
 int8_t heldButtonIdx() {
   unsigned long best = 0;
   int8_t        idx  = -1;
   for (uint8_t i = 0; i < NUM_BTNS; i++) {
-    if (btnCur[i]) {
+    if (btnCur[i] && !btnLongActive[i]) {  // nasconde dopo che il long ha scattato
       unsigned long held = millis() - btnHold[i];
       if (held > best) { best = held; idx = i; }
     }
@@ -518,6 +528,13 @@ void loop() {
   unsigned long stepMs  = 60000UL / (unsigned long)bpm / 2;
   unsigned long arpMs   = stepMs / ARP_DIVS;
 
+  // ── Apertura modalità secondarie (long edge: tasto ancora tenuto) ──
+  if (uiMode == UI_NORMAL) {
+    if (longPressed(1)) uiMode = UI_WAVE;      // LEFT 3s
+    if (longPressed(2)) uiMode = UI_ARP_MODE;  // RIGHT 3s
+    if (longPressed(6)) uiMode = UI_FX;        // TRACK 3s
+  }
+
   // ── Gestione modalità secondarie ──
   if (uiMode != UI_NORMAL) {
     int pot = analogRead(POT_PIN);
@@ -526,7 +543,7 @@ void loop() {
     else if (uiMode == UI_WAVE)     waveform[editTrack]         = map(pot, 0, 1023, 0, NUM_WAVES - 1);
     else if (uiMode == UI_ARP_MODE) arpMode = (ArpMode)map(pot, 0, 1023, 0, NUM_ARP_MODES - 1);
 
-    // Esci al rilascio del tasto che ha aperto la modalità
+    // Esci al RILASCIO del tasto che ha aperto la modalità
     if ((uiMode == UI_FX       && !btnCur[6]) ||
         (uiMode == UI_WAVE     && !btnCur[1]) ||
         (uiMode == UI_ARP_MODE && !btnCur[2]))
@@ -547,22 +564,15 @@ void loop() {
   if (pressed(3)) seq[editTrack][editStep] = min((int)seq[editTrack][editStep] + 1, NUM_NOTES - 1); // UP
   if (pressed(4)) seq[editTrack][editStep] = max((int)seq[editTrack][editStep] - 1, 0);             // DOWN
 
-  // TOGGLE short = step on/off  |  long = accordo (solo track A)
-  if (pressed(5))                       active[editTrack][editStep] = !active[editTrack][editStep];
-  if (longPressed(5) && editTrack == 0) chordOn[editStep] = !chordOn[editStep];
+  // TOGGLE short = step on/off  |  long = accordo (solo track A, one-shot)
+  if (pressed(5))                            active[editTrack][editStep] = !active[editTrack][editStep];
+  if (longPressed(5) && editTrack == 0)      chordOn[editStep] = !chordOn[editStep];
 
-  // UP long = arp toggle per step
+  // UP long = arp toggle per step (one-shot)
   if (longPressed(3)) stepArp[editTrack][editStep] = !stepArp[editTrack][editStep];
 
-  // LEFT long = modalità waveform
-  if (longPressed(1)) uiMode = UI_WAVE;
-
-  // RIGHT long = modalità arp mode
-  if (longPressed(2)) uiMode = UI_ARP_MODE;
-
-  // TRACK short = switch traccia  |  long = modalità effetto
-  if (pressed(6))     editTrack = 1 - editTrack;
-  if (longPressed(6)) uiMode = UI_FX;
+  // TRACK short = switch traccia
+  if (pressed(6)) editTrack = 1 - editTrack;
 
   // ── Sequencer ──
   if (playing) {
