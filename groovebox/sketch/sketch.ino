@@ -24,7 +24,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 
-#define USE_HW_PWM   // commenta se il build DTS fallisce
+// #define USE_HW_PWM   // disabilitato: overlay non ancora in posizione corretta
 
 #ifdef USE_HW_PWM
 #include <zephyr/drivers/pwm.h>
